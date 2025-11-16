@@ -428,13 +428,159 @@ async def cb_admin_movies_by_genre(callback: CallbackQuery):
 @dp.message(Command("cancel"))
 async def cmd_cancel(message: Message):
     user_id = message.from_user.id
+    cancelled = False
 
     if user_id in edit_states:
         edit_states.pop(user_id, None)
-        await message.reply("❌ Редактирование отменено.")
+        cancelled = True
+
+    if user_id in add_states:
+        add_states.pop(user_id, None)
+        cancelled = True
+
+    if user_id in search_states:
+        search_states.pop(user_id, None)
+        cancelled = True
+
+    if cancelled:
+        await message.reply("❌ Текущая операция отменена.")
+    else:
+        await message.reply("Сейчас нечего отменять.")
+
+@dp.callback_query(F.data.startswith("editg|"))
+async def cb_edit_genre_toggle(callback: CallbackQuery):
+    user_id = callback.from_user.id
+    state = edit_states.get(user_id)
+    if not state or state.get("stage") != "choosing_genres":
+        await callback.answer("Сейчас жанры не редактируются.", show_alert=True)
         return
 
-    await message.reply("Сейчас нечего отменять.")
+    try:
+        _, genre_id_str = callback.data.split("|", 1)
+        genre_id = int(genre_id_str)
+    except ValueError:
+        await callback.answer("Ошибка жанра.", show_alert=True)
+        return
+
+    selected: list[int] = state.get("selected_genre_ids", [])
+    if genre_id in selected:
+        selected.remove(genre_id)
+    else:
+        selected.append(genre_id)
+    state["selected_genre_ids"] = selected
+
+    # Обновляем сообщение
+    await callback.message.edit_reply_markup(
+        reply_markup=build_edit_genres_keyboard(selected)
+    )
+
+    await callback.answer()
+
+
+@dp.callback_query(F.data == "editg_done")
+async def cb_edit_genres_done(callback: CallbackQuery):
+    user_id = callback.from_user.id
+    state = edit_states.get(user_id)
+    if not state or state.get("stage") != "choosing_genres":
+        await callback.answer("Сейчас жанры не редактируются.", show_alert=True)
+        return
+
+    selected: list[int] = state.get("selected_genre_ids", [])
+    if not selected:
+        await callback.answer("Выберите хотя бы один жанр или нажмите «Оставить жанры без изменений».", show_alert=True)
+        return
+
+    from db import update_movie_full, get_all_genres
+
+    movie_id = state["movie_id"]
+    new_title = state.get("new_title", state["orig_title"])
+    new_director = state.get("new_director", state["orig_director"])
+
+    ok = update_movie_full(movie_id, new_title, new_director, selected)
+
+    if not ok:
+        edit_states.pop(user_id, None)
+        await callback.message.edit_text("Ошибка при сохранении изменений. Возможно, фильм был удалён.")
+        await callback.answer()
+        return
+
+    # Красивый итог
+    all_genres = get_all_genres()
+    id_to_name = {gid: name for gid, name in all_genres}
+    final_names = [id_to_name[gid] for gid in selected if gid in id_to_name]
+    genres_text = ", ".join(final_names) if final_names else "unknown"
+
+    text_lines = [
+        "✅ Фильм обновлён.",
+        f"id: {movie_id}",
+        f"Название: {new_title}",
+        f"Жанры: {genres_text}",
+    ]
+    if new_director:
+        text_lines.append(f"Режиссёр: {new_director}")
+
+    edit_states.pop(user_id, None)
+
+    await callback.message.edit_text("\n".join(text_lines))
+    await callback.answer("Сохранено.")
+
+
+@dp.callback_query(F.data == "editg_skip")
+async def cb_edit_genres_skip(callback: CallbackQuery):
+    user_id = callback.from_user.id
+    state = edit_states.get(user_id)
+    if not state or state.get("stage") != "choosing_genres":
+        await callback.answer("Сейчас жанры не редактируются.", show_alert=True)
+        return
+
+    from db import get_or_create_genre, update_movie_full
+
+    # Используем оригинальные жанры
+    orig_genres = state.get("orig_genres") or []
+    genre_ids: list[int] = [get_or_create_genre(name) for name in orig_genres]
+
+    movie_id = state["movie_id"]
+    new_title = state.get("new_title", state["orig_title"])
+    new_director = state.get("new_director", state["orig_director"])
+
+    ok = update_movie_full(movie_id, new_title, new_director, genre_ids)
+
+    if not ok:
+        edit_states.pop(user_id, None)
+        await callback.message.edit_text("Ошибка при сохранении изменений. Возможно, фильм был удалён.")
+        await callback.answer()
+        return
+
+    genres_text = ", ".join(orig_genres) if orig_genres else "unknown"
+
+    text_lines = [
+        "✅ Фильм обновлён (жанры оставлены без изменений).",
+        f"id: {movie_id}",
+        f"Название: {new_title}",
+        f"Жанры: {genres_text}",
+    ]
+    if new_director:
+        text_lines.append(f"Режиссёр: {new_director}")
+
+    edit_states.pop(user_id, None)
+
+    await callback.message.edit_text("\n".join(text_lines))
+    await callback.answer("Сохранено.")
+
+
+@dp.callback_query(F.data == "editg_cancel")
+async def cb_edit_genres_cancel(callback: CallbackQuery):
+    user_id = callback.from_user.id
+    if user_id in edit_states:
+        edit_states.pop(user_id, None)
+        await callback.message.edit_text("❌ Редактирование отменено.")
+    else:
+        await callback.answer("Сейчас нечего отменять.", show_alert=True)
+        return
+
+    await callback.answer()
+
+
 # ==========================
 #   АДМИН: РЕДАКТИРОВАНИЕ ФИЛЬМА
 # ==========================
@@ -598,71 +744,128 @@ async def process_edit_flow(message: Message):
     stage = state["stage"]
     text = message.text.strip()
 
+    # 1) Новое название
     if stage == "waiting_title":
         state["new_title"] = text if text != "-" else state["orig_title"]
         state["stage"] = "waiting_director"
 
         await message.reply(
             "Теперь отправьте *нового режиссёра*,\n"
-            "или напишите `-`, чтобы оставить без изменений.",
+            "или напишите `-`, чтобы оставить без изменений.\n\n"
+            "Для отмены в любой момент используйте /cancel.",
             parse_mode="Markdown",
         )
 
+    # 2) Новый режиссёр
     elif stage == "waiting_director":
         state["new_director"] = text if text != "-" else state["orig_director"]
-        state["stage"] = "waiting_genres"
 
-        orig_genres = state["orig_genres"]
-        orig_genres_text = ", ".join(orig_genres) if orig_genres else "unknown"
+        # Переходим к выбору жанров по кнопкам
+        state["stage"] = "choosing_genres"
 
+        from db import get_all_genres  # если не импортировано сверху, можно убрать и использовать общий импорт
+
+        all_genres = get_all_genres()  # [(id, name), ...]
+        orig_genres = state.get("orig_genres") or []
+        # выберем по умолчанию те жанры, которые уже были у фильма
+        selected_ids = [gid for gid, name in all_genres if name in orig_genres]
+        state["selected_genre_ids"] = selected_ids
+
+        await send_edit_genres_message(message.chat.id, message.from_user.id)
+
+    # 3) На этапе выбора жанров текст не нужен
+    elif stage == "choosing_genres":
         await message.reply(
-            "Теперь отправьте *новые жанры* через запятую,\n"
-            "например: `драма, фантастика`\n\n"
-            f"Текущие жанры: {orig_genres_text}\n"
-            "Или напишите `-`, чтобы оставить без изменений.",
-            parse_mode="Markdown",
+            "Сейчас идёт выбор жанров.\n"
+            "Пожалуйста, используйте кнопки под сообщением.\n\n"
+            "Если хотите отменить — /cancel."
         )
 
-    elif stage == "waiting_genres":
-        if text != "-":
-            raw_genres = [g.strip() for g in text.split(",") if g.strip()]
-            if not raw_genres:
-                await message.reply(
-                    "Нужно указать хотя бы один жанр или `-`, чтобы оставить как есть."
+def build_edit_genres_keyboard(selected_ids: list[int]) -> InlineKeyboardMarkup:
+    all_genres = get_all_genres()  # [(id, name), ...]
+    rows: list[list[InlineKeyboardButton]] = []
+
+    for genre_id, name in all_genres:
+        mark = "✅" if genre_id in selected_ids else "▫️"
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text=f"{mark} {name}",
+                    callback_data=f"editg|{genre_id}",
                 )
-                return
-            final_genres_names = raw_genres
-        else:
-            final_genres_names = state["orig_genres"] or []
+            ]
+        )
 
-        genre_ids: list[int] = []
-        for g_name in final_genres_names:
-            gid = get_or_create_genre(g_name)
-            genre_ids.append(gid)
-
-        movie_id = state["movie_id"]
-        new_title = state.get("new_title", state["orig_title"])
-        new_director = state.get("new_director", state["orig_director"])
-
-        ok = update_movie_full(movie_id, new_title, new_director, genre_ids)
-        edit_states.pop(message.from_user.id, None)
-
-        if not ok:
-            await message.reply("Ошибка при сохранении изменений. Возможно, фильм был удалён.")
-            return
-
-        genres_text = ", ".join(final_genres_names) if final_genres_names else "unknown"
-
-        text_lines = [
-            "✅ Фильм обновлён.",
-            f"id: {movie_id}",
-            f"Название: {new_title}",
-            f"Жанры: {genres_text}",
+    # Управляющие кнопки
+    rows.append(
+        [
+            InlineKeyboardButton(
+                text="✅ Готово",
+                callback_data="editg_done",
+            )
         ]
-        if new_director:
-            text_lines.append(f"Режиссёр: {new_director}")
+    )
+    rows.append(
+        [
+            InlineKeyboardButton(
+                text="↩️ Оставить жанры без изменений",
+                callback_data="editg_skip",
+            )
+        ]
+    )
+    rows.append(
+        [
+            InlineKeyboardButton(
+                text="❌ Отмена",
+                callback_data="editg_cancel",
+            )
+        ]
+    )
 
-        await message.reply("\n".join(text_lines))
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+async def send_edit_genres_message(chat_id: int, user_id: int):
+    """
+    Показываем сообщение с выбором жанров для редактирования.
+    """
+    state = edit_states.get(user_id)
+    if not state:
+        return
+
+    from db import get_all_genres
+
+    all_genres = get_all_genres()
+    selected_ids: list[int] = state.get("selected_genre_ids", [])
+
+    # Текст о фильме
+    title = state.get("new_title", state.get("orig_title"))
+    orig_genres = state.get("orig_genres") or []
+    orig_genres_text = ", ".join(orig_genres) if orig_genres else "unknown"
+
+    # Выбранные сейчас
+    id_to_name = {gid: name for gid, name in all_genres}
+    selected_names = [id_to_name[gid] for gid in selected_ids if gid in id_to_name]
+    selected_text = ", ".join(selected_names) if selected_names else "пока ничего не выбрано"
+
+    text_lines = [
+        f"✏️ Редактирование фильма: {title}",
+        "",
+        f"Текущие жанры: {orig_genres_text}",
+        f"Выбранные жанры: {selected_text}",
+        "",
+        "Нажимайте на жанры, чтобы включать/выключать их.",
+        "Когда закончите — нажмите «Готово».",
+        "Или «Оставить жанры без изменений».",
+        "",
+        "Для отмены также можно использовать /cancel.",
+    ]
+
+    kb = build_edit_genres_keyboard(selected_ids)
+
+    # Отправляем новое сообщение (не edit, чтобы было проще)
+    await bot.send_message(chat_id, "\n".join(text_lines), reply_markup=kb)
+
 
 
 # ==========================
