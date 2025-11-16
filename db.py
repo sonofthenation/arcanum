@@ -424,4 +424,101 @@ def update_movie_full(movie_id: int, title: str, director: str, genre_ids: list[
     return True
 
 
+def count_all_movies() -> int:
+    """Сколько всего фильмов в базе (для админ-пагинации)."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT COUNT(*) FROM movies;")
+    (count,) = cur.fetchone()
+    conn.close()
+    return count
+
+
+def get_all_movies_with_genres_paged(offset: int, limit: int):
+    """
+    Пагинированный список всех фильмов.
+    Возвращает: (id, title, genres_text, director, file_id)
+    """
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        """
+        SELECT
+            m.id,
+            m.title,
+            COALESCE(GROUP_CONCAT(DISTINCT g.name), '') AS genres,
+            m.director,
+            m.file_id
+        FROM movies m
+        LEFT JOIN movie_genres mg ON m.id = mg.movie_id
+        LEFT JOIN genres g ON mg.genre_id = g.id
+        GROUP BY
+            m.id,
+            m.title,
+            m.director,
+            m.file_id
+        ORDER BY m.id
+        LIMIT ? OFFSET ?;
+        """,
+        (limit, offset),
+    )
+    rows = cur.fetchall()
+    conn.close()
+    return rows
+
+
+def count_movies_by_genre_admin(genre_id: int) -> int:
+    """
+    Сколько фильмов относится к заданному жанру (уникальные фильмы).
+    """
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        """
+        SELECT COUNT(DISTINCT m.id)
+        FROM movies m
+        JOIN movie_genres mg ON m.id = mg.movie_id
+        WHERE mg.genre_id = ?;
+        """,
+        (genre_id,),
+    )
+    (count,) = cur.fetchone()
+    conn.close()
+    return count
+
+
+def get_movies_by_genre_admin(genre_id: int, offset: int, limit: int):
+    """
+    Пагинированный список фильмов для конкретного жанра.
+    Возвращает: (id, title, genres_text, director, file_id)
+    """
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        """
+        SELECT
+            m.id,
+            m.title,
+            COALESCE(GROUP_CONCAT(DISTINCT g.name), '') AS genres,
+            m.director,
+            m.file_id
+        FROM movies m
+        JOIN movie_genres mg ON m.id = mg.movie_id
+        LEFT JOIN genres g ON mg.genre_id = g.id
+        WHERE mg.genre_id = ?
+        GROUP BY
+            m.id,
+            m.title,
+            m.director,
+            m.file_id
+        ORDER BY m.id
+        LIMIT ? OFFSET ?;
+        """,
+        (genre_id, limit, offset),
+    )
+    rows = cur.fetchall()
+    conn.close()
+    return rows
+
+
 
