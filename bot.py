@@ -42,10 +42,10 @@ from db import (
 )
 import os
 
-API_TOKEN = os.getenv("BOT_TOKEN")
+API_TOKEN = "8492382149:AAGDOp7jzf4-I6tRDzDbThS1c6dq9Hh4Vbc"
+ADMIN_ID = 972442050
+BOT_USERNAME = "arcanumreelbot"
 ADMIN_MOVIES_PAGE_SIZE = 10  # сколько фильмов показывать администратору на странице
-ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
-BOT_USERNAME = os.getenv("BOT_USERNAME", "arcanumreelbot")
 
 logging.basicConfig(level=logging.INFO)
 
@@ -79,6 +79,21 @@ GENRE_EMOJIS = {
 }
 DEFAULT_GENRE_EMOJI = "🎬"
 
+numbers={
+    1:'1️⃣',
+    2:'2️⃣',
+    3:'3️⃣',
+    4:'4️⃣',
+    5:'5️⃣',
+    6:'6️⃣',
+    7:'7️⃣',
+    8:'8️⃣',
+    9:'9️⃣',
+    0:'0️⃣',
+}
+def num_to_sticker(num):
+    return numbers.get(num)
+
 
 def is_admin(user_id: int) -> bool:
     """Админ — тот, кто прошёл верификацию /admin."""
@@ -87,13 +102,15 @@ def is_admin(user_id: int) -> bool:
 def format_admin_movie_block(movie_id: int, title: str, genres: str, director: str | None, file_id: str) -> str:
     genres_text = genres if genres else "—"
     lines = [
-        f"<b>ID:</b> <code>{movie_id}</code>",
+        f"<b>{num_to_sticker(movie_id)}</b>",
+        f"<b>file_id:</b> <code>{file_id}</code>",
         f"<b>Название:</b> {title}",
         f"<b>Жанры:</b> {genres_text}",
     ]
+    link = f"https://t.me/{BOT_USERNAME}?start=m{movie_id}"
     if director:
         lines.append(f"<b>Режиссёр:</b> {director}")
-    lines.append(f"<b>file_id:</b> <code>{file_id}</code>")
+    lines.append(f"<b>link:</b> <code>{link}</code>")
     return "\n".join(lines)
 
 
@@ -362,11 +379,11 @@ async def cb_admin_movies_genres(callback: CallbackQuery):
     rows: list[list[InlineKeyboardButton]] = []
 
     for genre_id, name in genres:
-        lines.append(f"• {genre_id} — {name}")
+        lines.append(f"{genre_id}. {name.capitalize()} — {count_movies_by_genre_id(genre_id)}")
         rows.append(
             [
                 InlineKeyboardButton(
-                    text=name,
+                    text=name.capitalize(),
                     callback_data=f"adm_movies_g|{genre_id}|0",
                 )
             ]
