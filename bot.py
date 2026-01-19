@@ -42,9 +42,21 @@ from db import (
 )
 import os
 
-API_TOKEN = "8492382149:AAGDOp7jzf4-I6tRDzDbThS1c6dq9Hh4Vbc"
-ADMIN_ID = 972442050
-BOT_USERNAME = "arcanumreelbot"
+
+def _require_env(name: str) -> str:
+    value = os.getenv(name)
+    if not value:
+        raise RuntimeError(f"Missing required environment variable: {name}")
+    return value
+
+
+API_TOKEN = _require_env("API_TOKEN")
+BOT_USERNAME = _require_env("BOT_USERNAME")
+ADMIN_ID_RAW = _require_env("ADMIN_ID")
+try:
+    ADMIN_ID = int(ADMIN_ID_RAW)
+except ValueError as exc:
+    raise RuntimeError("ADMIN_ID must be an integer.") from exc
 ADMIN_MOVIES_PAGE_SIZE = 10  # сколько фильмов показывать администратору на странице
 
 logging.basicConfig(level=logging.INFO)
