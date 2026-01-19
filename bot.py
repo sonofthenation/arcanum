@@ -53,6 +53,7 @@ BOT_USERNAME = "arcanumreelbot"
 ADMIN_MOVIES_PAGE_SIZE = 10  # сколько фильмов показывать администратору на странице
 
 logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 bot = Bot(token=API_TOKEN)
 dp = Dispatcher()
@@ -91,6 +92,10 @@ numbers={
 }
 def num_to_sticker(num):
     return numbers.get(num)
+
+
+def log_db_error(operation: str, exc: Exception, **context) -> None:
+    logger.exception("DB error during %s. context=%s", operation, context)
 
 
 def is_admin(user_id: int) -> bool:
@@ -259,8 +264,9 @@ async def cmd_admin(message: Message):
         await message.reply("Вы не являетесь администратором этого бота.")
         return
 
-    first_time = not is_admin_verified(user_id)
-    set_admin_verified(user_id)
+    first_time = user_id not in admin_verified
+    admin_verified.add(user_id)
+    logger.info("Admin verified user_id=%s first_time=%s", user_id, first_time)
 
     # Настраиваем меню команд ТОЛЬКО для этого чата (т.е. твоего диалога с ботом)
     await bot.set_my_commands(
@@ -518,7 +524,22 @@ async def cb_edit_genres_done(callback: CallbackQuery):
     new_title = state.get("new_title", state["orig_title"])
     new_director = state.get("new_director", state["orig_director"])
 
-    ok = update_movie_full(movie_id, new_title, new_director, selected)
+    try:
+        ok = update_movie_full(movie_id, new_title, new_director, selected)
+    except Exception as exc:
+        log_db_error(
+            "update_movie_full",
+            exc,
+            movie_id=movie_id,
+            title=new_title,
+            director=new_director,
+            genre_ids=selected,
+            user_id=user_id,
+        )
+        edit_states.pop(user_id, None)
+        await callback.message.edit_text("Ошибка базы данных при сохранении изменений.")
+        await callback.answer()
+        return
 
     if not ok:
         clear_flow_state(user_id, "edit")
@@ -541,7 +562,15 @@ async def cb_edit_genres_done(callback: CallbackQuery):
     if new_director:
         text_lines.append(f"Режиссёр: {new_director}")
 
-    clear_flow_state(user_id, "edit")
+    edit_states.pop(user_id, None)
+    logger.info(
+        "Admin %s edited movie id=%s title='%s' director='%s' genre_ids=%s",
+        user_id,
+        movie_id,
+        new_title,
+        new_director,
+        selected,
+    )
 
     await callback.message.edit_text("\n".join(text_lines))
     await callback.answer("Сохранено.")
@@ -559,13 +588,40 @@ async def cb_edit_genres_skip(callback: CallbackQuery):
 
     # Используем оригинальные жанры
     orig_genres = state.get("orig_genres") or []
-    genre_ids: list[int] = [get_or_create_genre(name) for name in orig_genres]
+    try:
+        genre_ids: list[int] = [get_or_create_genre(name) for name in orig_genres]
+    except Exception as exc:
+        log_db_error(
+            "get_or_create_genre",
+            exc,
+            orig_genres=orig_genres,
+            user_id=user_id,
+        )
+        edit_states.pop(user_id, None)
+        await callback.message.edit_text("Ошибка базы данных при подготовке жанров.")
+        await callback.answer()
+        return
 
     movie_id = state["movie_id"]
     new_title = state.get("new_title", state["orig_title"])
     new_director = state.get("new_director", state["orig_director"])
 
-    ok = update_movie_full(movie_id, new_title, new_director, genre_ids)
+    try:
+        ok = update_movie_full(movie_id, new_title, new_director, genre_ids)
+    except Exception as exc:
+        log_db_error(
+            "update_movie_full",
+            exc,
+            movie_id=movie_id,
+            title=new_title,
+            director=new_director,
+            genre_ids=genre_ids,
+            user_id=user_id,
+        )
+        edit_states.pop(user_id, None)
+        await callback.message.edit_text("Ошибка базы данных при сохранении изменений.")
+        await callback.answer()
+        return
 
     if not ok:
         clear_flow_state(user_id, "edit")
@@ -584,7 +640,15 @@ async def cb_edit_genres_skip(callback: CallbackQuery):
     if new_director:
         text_lines.append(f"Режиссёр: {new_director}")
 
-    clear_flow_state(user_id, "edit")
+    edit_states.pop(user_id, None)
+    logger.info(
+        "Admin %s edited movie (genres unchanged) id=%s title='%s' director='%s' genre_ids=%s",
+        user_id,
+        movie_id,
+        new_title,
+        new_director,
+        genre_ids,
+    )
 
     await callback.message.edit_text("\n".join(text_lines))
     await callback.answer("Сохранено.")
@@ -1065,15 +1129,30 @@ async def cb_delete_yes(callback: CallbackQuery):
         await callback.answer("Ошибка данных.", show_alert=True)
         return
 
-    movie = get_movie_by_id(movie_id)
+    try:
+        movie = get_movie_by_id(movie_id)
+    except Exception as exc:
+        log_db_error("get_movie_by_id", exc, movie_id=movie_id, user_id=callback.from_user.id)
+        await callback.answer("Ошибка базы данных.", show_alert=True)
+        return
     if not movie:
         await callback.answer("Фильм уже удалён.", show_alert=True)
     else:
         _id, title, director, file_id = movie
-        genres = get_movie_genres(_id)
+        try:
+            genres = get_movie_genres(_id)
+        except Exception as exc:
+            log_db_error("get_movie_genres", exc, movie_id=_id, user_id=callback.from_user.id)
+            await callback.answer("Ошибка базы данных.", show_alert=True)
+            return
         genres_text = ", ".join(genres) if genres else "—"
 
-        deleted = delete_movie(movie_id)
+        try:
+            deleted = delete_movie(movie_id)
+        except Exception as exc:
+            log_db_error("delete_movie", exc, movie_id=movie_id, user_id=callback.from_user.id)
+            await callback.answer("Ошибка базы данных при удалении.", show_alert=True)
+            return
         if not deleted:
             await callback.answer("Не удалось удалить фильм.", show_alert=True)
             return
@@ -1082,6 +1161,12 @@ async def cb_delete_yes(callback: CallbackQuery):
             "🗑 Фильм удалён:\n\n" +
             format_admin_movie_block(_id, title, genres_text, director, file_id),
             parse_mode="HTML",
+        )
+        logger.info(
+            "Admin %s deleted movie id=%s title='%s'",
+            callback.from_user.id,
+            movie_id,
+            title,
         )
 
     await callback.answer("Фильм удалён.")
@@ -1122,12 +1207,22 @@ async def process_genre_delete(callback: CallbackQuery):
         await callback.answer("Ошибка id жанра.", show_alert=True)
         return
 
-    genre_name = get_genre_name(genre_id)
+    try:
+        genre_name = get_genre_name(genre_id)
+    except Exception as exc:
+        log_db_error("get_genre_name", exc, genre_id=genre_id, user_id=callback.from_user.id)
+        await callback.answer("Ошибка базы данных.", show_alert=True)
+        return
     if genre_name == "unknown":
         await callback.answer("Жанр уже удалён или не найден.", show_alert=True)
         return
 
-    success = delete_genre(genre_id)
+    try:
+        success = delete_genre(genre_id)
+    except Exception as exc:
+        log_db_error("delete_genre", exc, genre_id=genre_id, user_id=callback.from_user.id)
+        await callback.answer("Ошибка базы данных при удалении жанра.", show_alert=True)
+        return
     if not success:
         await callback.answer(
             f"Нельзя удалить жанр «{genre_name}»: к нему привязаны фильмы.",
@@ -1135,6 +1230,12 @@ async def process_genre_delete(callback: CallbackQuery):
         )
         return
 
+    logger.info(
+        "Admin %s deleted genre id=%s name='%s'",
+        callback.from_user.id,
+        genre_id,
+        genre_name,
+    )
     await callback.answer(f"Жанр «{genre_name}» удалён.", show_alert=True)
     await callback.message.edit_text(
         "Жанр удалён. Обновлённый список можно посмотреть командой /genres_admin."
@@ -1191,17 +1292,35 @@ async def cmd_start(message: Message):
             await message.reply("Неверная ссылка на фильм.")
             return
 
-        movie = get_movie_by_id(movie_id)
+        try:
+            movie = get_movie_by_id(movie_id)
+        except Exception as exc:
+            log_db_error("get_movie_by_id", exc, movie_id=movie_id)
+            await message.reply("Ошибка базы данных. Попробуйте позже.")
+            return
         if not movie:
             await message.reply("Фильм по этой ссылке не найден.")
             return
 
         _id, title, director, file_id = movie
-        genres = get_movie_genres(_id)
+        try:
+            genres = get_movie_genres(_id)
+        except Exception as exc:
+            log_db_error("get_movie_genres", exc, movie_id=_id)
+            await message.reply("Ошибка базы данных. Попробуйте позже.")
+            return
 
         caption = build_movie_caption(title, genres, director)
 
-        add_watch_history(message.from_user.id, _id)
+        try:
+            add_watch_history(message.from_user.id, _id)
+        except Exception as exc:
+            log_db_error(
+                "add_watch_history",
+                exc,
+                user_id=message.from_user.id,
+                movie_id=_id,
+            )
 
         try:
             await message.reply_video(
@@ -1209,12 +1328,23 @@ async def cmd_start(message: Message):
                 caption=caption,
                 reply_markup=build_movie_link_kb(_id),
             )
-        except Exception:
-            await message.reply_document(
-                file_id,
-                caption=caption,
-                reply_markup=build_movie_link_kb(_id),
+        except Exception as exc:
+            logger.exception(
+                "Failed to send video for deep link",
+                extra={"movie_id": _id, "user_id": message.from_user.id},
             )
+            try:
+                await message.reply_document(
+                    file_id,
+                    caption=caption,
+                    reply_markup=build_movie_link_kb(_id),
+                )
+            except Exception:
+                logger.exception(
+                    "Failed to send document for deep link",
+                    extra={"movie_id": _id, "user_id": message.from_user.id},
+                )
+                await message.reply("Не удалось отправить файл. Попробуйте позже.")
 
         return
 
@@ -1271,7 +1401,13 @@ async def process_add_genre_name(message: Message):
         await message.reply("Название жанра не может быть пустым. Попробуйте снова: /add_genre")
         return
 
-    genre_id = get_or_create_genre(name)
+    try:
+        genre_id = get_or_create_genre(name)
+    except Exception as exc:
+        log_db_error("get_or_create_genre", exc, name=name, user_id=user_id)
+        await message.reply("Ошибка базы данных при сохранении жанра.")
+        return
+    logger.info("Admin %s added genre '%s' (id=%s)", user_id, name, genre_id)
     await message.reply(f"Жанр «{name}» сохранён (id={genre_id}).")
 
 
@@ -1396,15 +1532,39 @@ async def callback_add_genre_done(callback: CallbackQuery):
         return
 
     genre_ids = list(selected)
-    movie_id = add_movie(
-        title=title,
-        file_id=file_id,
-        director=director,
-        genre_ids=genre_ids,
+    try:
+        movie_id = add_movie(
+            title=title,
+            file_id=file_id,
+            director=director,
+            genre_ids=genre_ids,
+        )
+    except Exception as exc:
+        log_db_error(
+            "add_movie",
+            exc,
+            title=title,
+            director=director,
+            genre_ids=genre_ids,
+            user_id=user_id,
+        )
+        await callback.message.edit_text("Ошибка базы данных при сохранении фильма.")
+        add_states.pop(user_id, None)
+        return
+    logger.info(
+        "Admin %s added movie id=%s title='%s' genre_ids=%s",
+        user_id,
+        movie_id,
+        title,
+        genre_ids,
     )
 
     # Получим названия выбранных жанров
-    all_genres = dict(get_all_genres())  # id -> name
+    try:
+        all_genres = dict(get_all_genres())  # id -> name
+    except Exception as exc:
+        log_db_error("get_all_genres", exc, user_id=user_id)
+        all_genres = {}
     names = [all_genres.get(gid, str(gid)) for gid in genre_ids]
 
     clear_flow_state(user_id, "add")
@@ -1432,7 +1592,12 @@ async def btn_random(message: Message):
 
 @dp.message(Command("random"))
 async def cmd_random(message: Message):
-    movie = get_random_movie()
+    try:
+        movie = get_random_movie()
+    except Exception as exc:
+        log_db_error("get_random_movie", exc, user_id=message.from_user.id)
+        await message.reply("Ошибка базы данных. Попробуйте позже.")
+        return
     if not movie:
         await message.reply("Пока нет фильмов в базе.")
         return
@@ -1441,7 +1606,15 @@ async def cmd_random(message: Message):
 
     caption = build_movie_caption(title, genres, director)
 
-    add_watch_history(message.from_user.id, movie_id)
+    try:
+        add_watch_history(message.from_user.id, movie_id)
+    except Exception as exc:
+        log_db_error(
+            "add_watch_history",
+            exc,
+            user_id=message.from_user.id,
+            movie_id=movie_id,
+        )
 
     try:
         await message.reply_video(
@@ -1449,12 +1622,23 @@ async def cmd_random(message: Message):
             caption=caption,
             reply_markup=build_movie_link_kb(movie_id),
         )
-    except Exception:
-        await message.reply_document(
-            file_id,
-            caption=caption,
-            reply_markup=build_movie_link_kb(movie_id),
+    except Exception as exc:
+        logger.exception(
+            "Failed to send random movie video",
+            extra={"movie_id": movie_id, "user_id": message.from_user.id},
         )
+        try:
+            await message.reply_document(
+                file_id,
+                caption=caption,
+                reply_markup=build_movie_link_kb(movie_id),
+            )
+        except Exception:
+            logger.exception(
+                "Failed to send random movie document",
+                extra={"movie_id": movie_id, "user_id": message.from_user.id},
+            )
+            await message.reply("Не удалось отправить файл. Попробуйте позже.")
 
 
 # ==========================
@@ -1467,7 +1651,12 @@ async def btn_by_genre(message: Message):
 
 @dp.message(Command("by_genre"))
 async def cmd_by_genre(message: Message):
-    genres = get_all_genres()
+    try:
+        genres = get_all_genres()
+    except Exception as exc:
+        log_db_error("get_all_genres", exc, user_id=message.from_user.id)
+        await message.reply("Ошибка базы данных. Попробуйте позже.")
+        return
     if not genres:
         await message.reply("Жанров пока нет. Сначала добавьте фильмы.")
         return
@@ -1607,17 +1796,35 @@ async def process_movie_select(callback_query: types.CallbackQuery):
         await callback_query.answer("Некорректный фильм.", show_alert=True)
         return
 
-    movie = get_movie_by_id(movie_id)
+    try:
+        movie = get_movie_by_id(movie_id)
+    except Exception as exc:
+        log_db_error("get_movie_by_id", exc, movie_id=movie_id)
+        await callback_query.answer("Ошибка базы данных.", show_alert=True)
+        return
     if not movie:
         await callback_query.answer("Фильм не найден.", show_alert=True)
         return
 
     _id, title, director, file_id = movie
-    genres = get_movie_genres(_id)
+    try:
+        genres = get_movie_genres(_id)
+    except Exception as exc:
+        log_db_error("get_movie_genres", exc, movie_id=_id)
+        await callback_query.answer("Ошибка базы данных.", show_alert=True)
+        return
 
     caption = build_movie_caption(title, genres, director)
 
-    add_watch_history(callback_query.from_user.id, _id)
+    try:
+        add_watch_history(callback_query.from_user.id, _id)
+    except Exception as exc:
+        log_db_error(
+            "add_watch_history",
+            exc,
+            user_id=callback_query.from_user.id,
+            movie_id=_id,
+        )
 
     try:
         await callback_query.message.answer_video(
@@ -1625,12 +1832,23 @@ async def process_movie_select(callback_query: types.CallbackQuery):
             caption=caption,
             reply_markup=build_movie_link_kb(_id),
         )
-    except Exception:
-        await callback_query.message.answer_document(
-            file_id,
-            caption=caption,
-            reply_markup=build_movie_link_kb(_id),
+    except Exception as exc:
+        logger.exception(
+            "Failed to send movie video",
+            extra={"movie_id": _id, "user_id": callback_query.from_user.id},
         )
+        try:
+            await callback_query.message.answer_document(
+                file_id,
+                caption=caption,
+                reply_markup=build_movie_link_kb(_id),
+            )
+        except Exception:
+            logger.exception(
+                "Failed to send movie document",
+                extra={"movie_id": _id, "user_id": callback_query.from_user.id},
+            )
+            await callback_query.message.answer("Не удалось отправить файл. Попробуйте позже.")
 
     await callback_query.answer()
 
@@ -1676,7 +1894,12 @@ async def btn_history(message: Message):
 
 @dp.message(Command("history"))
 async def cmd_history(message: Message):
-    rows = get_user_history(message.from_user.id, limit=10)
+    try:
+        rows = get_user_history(message.from_user.id, limit=10)
+    except Exception as exc:
+        log_db_error("get_user_history", exc, user_id=message.from_user.id, limit=10)
+        await message.reply("Ошибка базы данных. Попробуйте позже.")
+        return
     if not rows:
         await message.reply("Вы ещё не смотрели фильмы через бота.")
         return
@@ -1720,7 +1943,12 @@ async def process_search_input(message: Message):
         await message.reply("Пустой запрос. Попробуйте снова /search.")
         return
 
-    results = search_movies(query)
+    try:
+        results = search_movies(query)
+    except Exception as exc:
+        log_db_error("search_movies", exc, user_id=user_id, query=query)
+        await message.reply("Ошибка базы данных. Попробуйте позже.")
+        return
     if not results:
         await message.reply("Ничего не найдено 😕")
         return
@@ -1795,8 +2023,15 @@ async def cmd_link(message: Message):
 #   ЗАПУСК
 # ==========================
 async def main():
-    init_db()
-    await dp.start_polling(bot)
+    logger.info("Bot starting")
+    try:
+        init_db()
+        await dp.start_polling(bot)
+    except Exception:
+        logger.exception("Bot stopped due to error")
+        raise
+    finally:
+        logger.info("Bot stopped")
 
 
 if __name__ == "__main__":
