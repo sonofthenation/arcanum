@@ -42,9 +42,32 @@ from db import (
 )
 import os
 
-API_TOKEN = "8492382149:AAGDOp7jzf4-I6tRDzDbThS1c6dq9Hh4Vbc"
-ADMIN_ID = 972442050
-BOT_USERNAME = "arcanumreelbot"
+
+def get_required_env(name: str) -> str:
+    value = os.getenv(name)
+    if value is None or not value.strip():
+        raise RuntimeError(f"Missing required environment variable: {name}")
+    return value.strip()
+
+
+missing_vars = []
+for required_var in ("API_TOKEN", "ADMIN_ID", "BOT_USERNAME"):
+    if not os.getenv(required_var):
+        missing_vars.append(required_var)
+
+if missing_vars:
+    raise RuntimeError(
+        "Missing required environment variables: "
+        + ", ".join(missing_vars)
+        + ". Set them before starting the bot."
+    )
+
+API_TOKEN = get_required_env("API_TOKEN")
+BOT_USERNAME = get_required_env("BOT_USERNAME")
+try:
+    ADMIN_ID = int(get_required_env("ADMIN_ID"))
+except ValueError as exc:
+    raise RuntimeError("ADMIN_ID must be an integer Telegram user ID.") from exc
 ADMIN_MOVIES_PAGE_SIZE = 10  # сколько фильмов показывать администратору на странице
 
 logging.basicConfig(level=logging.INFO)
