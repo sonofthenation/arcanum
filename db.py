@@ -1,7 +1,8 @@
 # db.py
+import json
+import random
 import sqlite3
 from typing import Optional, Sequence
-import random
 
 DB_NAME = "movies.db"
 PAGE_SIZE = 10  # сколько фильмов показываем на странице по жанру
@@ -63,6 +64,19 @@ def init_db():
         """
     )
 
+    # Состояния пользователей (FSM)
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS user_flow_states (
+            user_id INTEGER NOT NULL,
+            flow TEXT NOT NULL,
+            state_json TEXT NOT NULL,
+            updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+            PRIMARY KEY (user_id, flow)
+        );
+        """
+    )
+
     conn.commit()
     conn.close()
 
@@ -94,6 +108,75 @@ def get_genre_name(genre_id: int) -> str:
     row = cur.fetchone()
     conn.close()
     return row[0] if row else "unknown"
+
+
+def get_user_flow_state(user_id: int, flow: str) -> Optional[dict]:
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT state_json FROM user_flow_states WHERE user_id = ? AND flow = ?;",
+        (user_id, flow),
+    )
+    row = cur.fetchone()
+    conn.close()
+    if not row:
+        return None
+    try:
+        return json.loads(row[0])
+    except json.JSONDecodeError:
+        return None
+
+
+def set_user_flow_state(user_id: int, flow: str, state: dict) -> None:
+    payload = json.dumps(state, ensure_ascii=False)
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        """
+        INSERT INTO user_flow_states (user_id, flow, state_json)
+        VALUES (?, ?, ?)
+        ON CONFLICT(user_id, flow) DO UPDATE SET
+            state_json = excluded.state_json,
+            updated_at = datetime('now');
+        """,
+        (user_id, flow, payload),
+    )
+    conn.commit()
+    conn.close()
+
+
+def clear_user_flow_state(user_id: int, flow: str) -> None:
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        "DELETE FROM user_flow_states WHERE user_id = ? AND flow = ?;",
+        (user_id, flow),
+    )
+    conn.commit()
+    conn.close()
+
+
+def clear_user_flow_states(user_id: int, flows: Sequence[str]) -> None:
+    if not flows:
+        return
+    conn = get_connection()
+    cur = conn.cursor()
+    placeholders = ", ".join(["?"] * len(flows))
+    cur.execute(
+        f"DELETE FROM user_flow_states WHERE user_id = ? AND flow IN ({placeholders});",
+        (user_id, *flows),
+    )
+    conn.commit()
+    conn.close()
+
+
+def is_admin_verified(user_id: int) -> bool:
+    state = get_user_flow_state(user_id, "admin")
+    return bool(state and state.get("verified"))
+
+
+def set_admin_verified(user_id: int) -> None:
+    set_user_flow_state(user_id, "admin", {"verified": True})
 
 
 
@@ -519,6 +602,5 @@ def get_movies_by_genre_admin(genre_id: int, offset: int, limit: int):
     rows = cur.fetchall()
     conn.close()
     return rows
-
 
 
