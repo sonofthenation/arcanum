@@ -328,7 +328,8 @@ def search_movies(query: str):
     Поиск фильмов по названию, режиссёру или жанру.
     Возвращает: (movie_id, title, genres_string, director, file_id)
     """
-    q = f"%{query}%"  # ищем как есть, без lower()
+    normalized_query = query.strip().lower()
+    q = f"%{normalized_query}%"
 
     conn = get_connection()
     cur = conn.cursor()
@@ -343,9 +344,9 @@ def search_movies(query: str):
         FROM movies m
         LEFT JOIN movie_genres mg ON m.id = mg.movie_id
         LEFT JOIN genres g ON mg.genre_id = g.id
-        WHERE m.title    LIKE ?
-           OR m.director LIKE ?
-           OR g.name     LIKE ?
+        WHERE LOWER(m.title)    LIKE ?
+           OR LOWER(m.director) LIKE ?
+           OR LOWER(g.name)     LIKE ?
         GROUP BY
             m.id,
             m.title,
@@ -519,6 +520,5 @@ def get_movies_by_genre_admin(genre_id: int, offset: int, limit: int):
     rows = cur.fetchall()
     conn.close()
     return rows
-
 
 

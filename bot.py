@@ -99,8 +99,16 @@ def is_admin(user_id: int) -> bool:
     """Админ — тот, кто прошёл верификацию /admin."""
     return user_id in admin_verified
 
+def parse_genres_source(genres_source) -> list[str]:
+    if not genres_source:
+        return []
+    if isinstance(genres_source, str):
+        return [g.strip() for g in genres_source.split(",") if g.strip()]
+    return [g.strip() for g in genres_source if g and g.strip()]
+
+
 def format_admin_movie_block(movie_id: int, title: str, genres: str, director: str | None, file_id: str) -> str:
-    genres_text = genres if genres else "—"
+    genres_text = format_genres_display(parse_genres_source(genres))
     lines = [
         f"<b>{num_to_sticker(movie_id)}</b>",
         f"<b>file_id:</b> <code>{file_id}</code>",
@@ -178,11 +186,7 @@ def build_movie_caption(title: str, genres_source, director: str | None) -> str:
     Единый формат описания фильма.
     genres_source — либо строка "драма, фантастика", либо список строк.
     """
-    if isinstance(genres_source, str):
-        genre_list = [g.strip() for g in genres_source.split(",") if g.strip()]
-    else:
-        genre_list = list(genres_source or [])
-
+    genre_list = parse_genres_source(genres_source)
     genres_text = format_genres_display(genre_list)
 
     lines = [
@@ -525,7 +529,7 @@ async def cb_edit_genres_done(callback: CallbackQuery):
     all_genres = get_all_genres()
     id_to_name = {gid: name for gid, name in all_genres}
     final_names = [id_to_name[gid] for gid in selected if gid in id_to_name]
-    genres_text = ", ".join(final_names) if final_names else "unknown"
+    genres_text = format_genres_display(final_names)
 
     text_lines = [
         "✅ Фильм обновлён.",
@@ -568,7 +572,7 @@ async def cb_edit_genres_skip(callback: CallbackQuery):
         await callback.answer()
         return
 
-    genres_text = ", ".join(orig_genres) if orig_genres else "unknown"
+    genres_text = format_genres_display(orig_genres)
 
     text_lines = [
         "✅ Фильм обновлён (жанры оставлены без изменений).",
@@ -647,7 +651,8 @@ async def send_edit_page(message_or_callback, page: int):
     kb_rows: list[list[InlineKeyboardButton]] = []
 
     for i, (movie_id, title, genres, director, file_id) in enumerate(rows, start=start_num):
-        lines.append(f"{i}. {title} ({genres if genres else '—'})")
+        genres_text = format_genres_display(parse_genres_source(genres))
+        lines.append(f"{i}. {title} ({genres_text})")
         btn_text = f"{i}"
         kb_rows.append(
             [
@@ -721,7 +726,7 @@ async def cb_edit_pick(callback: CallbackQuery):
 
     _id, title, director, file_id = movie
     genres = get_movie_genres(_id)
-    genres_text = ", ".join(genres) if genres else "unknown"
+    genres_text = format_genres_display(genres)
 
     # Сохраняем состояние редактирования
     edit_states[callback.from_user.id] = {
@@ -1403,7 +1408,7 @@ async def callback_add_genre_done(callback: CallbackQuery):
         "✅ Фильм добавлен в базу.",
         f"id: {movie_id}",
         f"Название: {title}",
-        f"Жанры: {', '.join(names)}",
+        f"Жанры: {format_genres_display(names)}",
     ]
     if director:
         text_lines.append(f"Режиссёр: {director}")
@@ -1768,7 +1773,7 @@ async def cmd_link(message: Message):
     lines = [f"🔗 Найдено фильмов: {len(results)} (показано {len(shown)}):", ""]
     for idx, (movie_id, title, genre_name, director, file_id) in enumerate(shown, start=1):
         link = f"https://t.me/{BOT_USERNAME}?start=m{movie_id}"
-        line = f"{idx}. {title} ({genre_name}"
+        line = f"{idx}. {title} ({format_genres_display(parse_genres_source(genre_name))}"
         if director:
             line += f", реж. {director}"
         line += f")\n<a href=\"{link}\">Ссылка на фильм🔗</a>"
