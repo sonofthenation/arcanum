@@ -39,6 +39,11 @@ from db import (
     count_all_movies,
     count_movies_by_genre_admin,
     get_movies_by_genre_admin,
+    get_user_flow_state,
+    set_user_flow_state,
+    clear_user_flow_state,
+    is_admin_verified,
+    set_admin_verified,
 )
 import os
 
@@ -52,13 +57,6 @@ logger = logging.getLogger(__name__)
 
 bot = Bot(token=API_TOKEN)
 dp = Dispatcher()
-
-# "Состояния"
-add_states: dict[int, dict] = {}       # добавление фильма
-search_states: dict[int, bool] = {}    # поиск
-edit_states: dict[int, dict] = {}      # редактирование фильма
-genre_add_states: set[int] = set()     # добавление жанра (диалог)
-admin_verified: set[int] = set()       # кто прошёл админ-верификацию
 
 # Эмодзи для жанров
 GENRE_EMOJIS = {
@@ -102,7 +100,19 @@ def log_db_error(operation: str, exc: Exception, **context) -> None:
 
 def is_admin(user_id: int) -> bool:
     """Админ — тот, кто прошёл верификацию /admin."""
-    return user_id in admin_verified
+    return is_admin_verified(user_id)
+
+
+def get_flow_state(user_id: int, flow: str) -> dict | None:
+    return get_user_flow_state(user_id, flow)
+
+
+def set_flow_state(user_id: int, flow: str, state: dict) -> None:
+    set_user_flow_state(user_id, flow, state)
+
+
+def clear_flow_state(user_id: int, flow: str) -> None:
+    clear_user_flow_state(user_id, flow)
 
 def format_admin_movie_block(movie_id: int, title: str, genres: str, director: str | None, file_id: str) -> str:
     genres_text = genres if genres else "—"
@@ -453,17 +463,11 @@ async def cmd_cancel(message: Message):
     user_id = message.from_user.id
     cancelled = False
 
-    if user_id in edit_states:
-        edit_states.pop(user_id, None)
-        cancelled = True
-
-    if user_id in add_states:
-        add_states.pop(user_id, None)
-        cancelled = True
-
-    if user_id in search_states:
-        search_states.pop(user_id, None)
-        cancelled = True
+    flows = ["edit", "add", "search", "add_genre"]
+    for flow in flows:
+        if get_flow_state(user_id, flow):
+            clear_flow_state(user_id, flow)
+            cancelled = True
 
     if cancelled:
         await message.reply("❌ Текущая операция отменена.")
@@ -473,7 +477,7 @@ async def cmd_cancel(message: Message):
 @dp.callback_query(F.data.startswith("editg|"))
 async def cb_edit_genre_toggle(callback: CallbackQuery):
     user_id = callback.from_user.id
-    state = edit_states.get(user_id)
+    state = get_flow_state(user_id, "edit")
     if not state or state.get("stage") != "choosing_genres":
         await callback.answer("Сейчас жанры не редактируются.", show_alert=True)
         return
@@ -491,6 +495,7 @@ async def cb_edit_genre_toggle(callback: CallbackQuery):
     else:
         selected.append(genre_id)
     state["selected_genre_ids"] = selected
+    set_flow_state(user_id, "edit", state)
 
     # Обновляем сообщение
     await callback.message.edit_reply_markup(
@@ -503,7 +508,7 @@ async def cb_edit_genre_toggle(callback: CallbackQuery):
 @dp.callback_query(F.data == "editg_done")
 async def cb_edit_genres_done(callback: CallbackQuery):
     user_id = callback.from_user.id
-    state = edit_states.get(user_id)
+    state = get_flow_state(user_id, "edit")
     if not state or state.get("stage") != "choosing_genres":
         await callback.answer("Сейчас жанры не редактируются.", show_alert=True)
         return
@@ -537,7 +542,7 @@ async def cb_edit_genres_done(callback: CallbackQuery):
         return
 
     if not ok:
-        edit_states.pop(user_id, None)
+        clear_flow_state(user_id, "edit")
         await callback.message.edit_text("Ошибка при сохранении изменений. Возможно, фильм был удалён.")
         await callback.answer()
         return
@@ -574,7 +579,7 @@ async def cb_edit_genres_done(callback: CallbackQuery):
 @dp.callback_query(F.data == "editg_skip")
 async def cb_edit_genres_skip(callback: CallbackQuery):
     user_id = callback.from_user.id
-    state = edit_states.get(user_id)
+    state = get_flow_state(user_id, "edit")
     if not state or state.get("stage") != "choosing_genres":
         await callback.answer("Сейчас жанры не редактируются.", show_alert=True)
         return
@@ -619,7 +624,7 @@ async def cb_edit_genres_skip(callback: CallbackQuery):
         return
 
     if not ok:
-        edit_states.pop(user_id, None)
+        clear_flow_state(user_id, "edit")
         await callback.message.edit_text("Ошибка при сохранении изменений. Возможно, фильм был удалён.")
         await callback.answer()
         return
@@ -652,8 +657,8 @@ async def cb_edit_genres_skip(callback: CallbackQuery):
 @dp.callback_query(F.data == "editg_cancel")
 async def cb_edit_genres_cancel(callback: CallbackQuery):
     user_id = callback.from_user.id
-    if user_id in edit_states:
-        edit_states.pop(user_id, None)
+    if get_flow_state(user_id, "edit"):
+        clear_flow_state(user_id, "edit")
         await callback.message.edit_text("❌ Редактирование отменено.")
     else:
         await callback.answer("Сейчас нечего отменять.", show_alert=True)
@@ -788,13 +793,13 @@ async def cb_edit_pick(callback: CallbackQuery):
     genres_text = ", ".join(genres) if genres else "unknown"
 
     # Сохраняем состояние редактирования
-    edit_states[callback.from_user.id] = {
+    set_flow_state(callback.from_user.id, "edit", {
         "stage": "waiting_title",
         "movie_id": movie_id,
         "orig_title": title,
         "orig_director": director or "",
         "orig_genres": genres,  # список строк
-    }
+    })
 
     text_lines = [
         f"✏️ <b>Редактирование фильма id={movie_id}</b>",
@@ -816,9 +821,9 @@ async def cb_edit_pick(callback: CallbackQuery):
     await callback.answer()
 
 
-@dp.message(lambda m: m.from_user.id in edit_states and not m.text.startswith("/"))
+@dp.message(lambda m: get_flow_state(m.from_user.id, "edit") and not m.text.startswith("/"))
 async def process_edit_flow(message: Message):
-    state = edit_states.get(message.from_user.id)
+    state = get_flow_state(message.from_user.id, "edit")
     if state is None:
         return
 
@@ -829,6 +834,7 @@ async def process_edit_flow(message: Message):
     if stage == "waiting_title":
         state["new_title"] = text if text != "-" else state["orig_title"]
         state["stage"] = "waiting_director"
+        set_flow_state(message.from_user.id, "edit", state)
 
         await message.reply(
             "Теперь отправьте *нового режиссёра*,\n"
@@ -851,6 +857,7 @@ async def process_edit_flow(message: Message):
         # выберем по умолчанию те жанры, которые уже были у фильма
         selected_ids = [gid for gid, name in all_genres if name in orig_genres]
         state["selected_genre_ids"] = selected_ids
+        set_flow_state(message.from_user.id, "edit", state)
 
         await send_edit_genres_message(message.chat.id, message.from_user.id)
 
@@ -910,7 +917,7 @@ async def send_edit_genres_message(chat_id: int, user_id: int):
     """
     Показываем сообщение с выбором жанров для редактирования.
     """
-    state = edit_states.get(user_id)
+    state = get_flow_state(user_id, "edit")
     if not state:
         return
 
@@ -1380,15 +1387,15 @@ async def cmd_add_genre(message: Message):
         await message.reply("Доступ только для администратора. Введите /admin.")
         return
 
-    genre_add_states.add(message.from_user.id)
+    set_flow_state(message.from_user.id, "add_genre", {"stage": "waiting_name"})
     await message.reply("Введите название нового жанра:")
 
 
-@dp.message(lambda m: m.from_user.id in genre_add_states and not m.text.startswith("/"))
+@dp.message(lambda m: get_flow_state(m.from_user.id, "add_genre") and not m.text.startswith("/"))
 async def process_add_genre_name(message: Message):
     user_id = message.from_user.id
     name = message.text.strip()
-    genre_add_states.discard(user_id)
+    clear_flow_state(user_id, "add_genre")
 
     if not name:
         await message.reply("Название жанра не может быть пустым. Попробуйте снова: /add_genre")
@@ -1428,17 +1435,17 @@ async def cmd_add(message: Message):
         await message.reply("Не вижу видео или файла в сообщении, на которое вы ответили.")
         return
 
-    add_states[message.from_user.id] = {
+    set_flow_state(message.from_user.id, "add", {
         "stage": "waiting_title",
         "file_id": file_id,
-    }
+    })
 
     await message.reply("Окей. Напишите название фильма.")
 
 
-@dp.message(lambda m: m.from_user.id in add_states)
+@dp.message(lambda m: get_flow_state(m.from_user.id, "add"))
 async def process_add_flow(message: Message):
-    state = add_states.get(message.from_user.id)
+    state = get_flow_state(message.from_user.id, "add")
     if state is None:
         return
 
@@ -1447,6 +1454,7 @@ async def process_add_flow(message: Message):
     if stage == "waiting_title":
         state["title"] = message.text.strip()
         state["stage"] = "waiting_director"
+        set_flow_state(message.from_user.id, "add", state)
         await message.reply("Записал название. Теперь напишите режиссёра (можно просто имя или «не знаю»).")
 
     elif stage == "waiting_director":
@@ -1458,10 +1466,11 @@ async def process_add_flow(message: Message):
             await message.reply(
                 "Пока нет ни одного жанра. Сначала добавьте жанры через /add_genre."
             )
-            add_states.pop(message.from_user.id, None)
+            clear_flow_state(message.from_user.id, "add")
             return
 
-        state["selected_genres"] = set()
+        state["selected_genres"] = []
+        set_flow_state(message.from_user.id, "add", state)
         kb = build_genre_select_kb(set())
 
         await message.reply(
@@ -1475,7 +1484,7 @@ async def process_add_flow(message: Message):
 @dp.callback_query(F.data.startswith("addg|"))
 async def callback_add_genre_choose(callback: CallbackQuery):
     user_id = callback.from_user.id
-    state = add_states.get(user_id)
+    state = get_flow_state(user_id, "add")
     if not state or state.get("stage") != "choosing_genres":
         await callback.answer()
         return
@@ -1487,12 +1496,13 @@ async def callback_add_genre_choose(callback: CallbackQuery):
         await callback.answer()
         return
 
-    selected: set[int] = state.get("selected_genres", set())
+    selected = set(state.get("selected_genres", []))
     if genre_id in selected:
         selected.remove(genre_id)
     else:
         selected.add(genre_id)
-    state["selected_genres"] = selected
+    state["selected_genres"] = sorted(selected)
+    set_flow_state(user_id, "add", state)
 
     kb = build_genre_select_kb(selected)
     await callback.message.edit_reply_markup(reply_markup=kb)
@@ -1502,12 +1512,12 @@ async def callback_add_genre_choose(callback: CallbackQuery):
 @dp.callback_query(F.data == "addg_done")
 async def callback_add_genre_done(callback: CallbackQuery):
     user_id = callback.from_user.id
-    state = add_states.get(user_id)
+    state = get_flow_state(user_id, "add")
     if not state or state.get("stage") != "choosing_genres":
         await callback.answer()
         return
 
-    selected: set[int] = state.get("selected_genres") or set()
+    selected = set(state.get("selected_genres") or [])
     if not selected:
         await callback.answer("Выберите хотя бы один жанр.", show_alert=True)
         return
@@ -1518,7 +1528,7 @@ async def callback_add_genre_done(callback: CallbackQuery):
 
     if not (title and file_id):
         await callback.answer("Ошибка при сохранении фильма.", show_alert=True)
-        add_states.pop(user_id, None)
+        clear_flow_state(user_id, "add")
         return
 
     genre_ids = list(selected)
@@ -1557,7 +1567,7 @@ async def callback_add_genre_done(callback: CallbackQuery):
         all_genres = {}
     names = [all_genres.get(gid, str(gid)) for gid in genre_ids]
 
-    add_states.pop(user_id, None)
+    clear_flow_state(user_id, "add")
 
     text_lines = [
         "✅ Фильм добавлен в базу.",
@@ -1919,15 +1929,15 @@ async def btn_search(message: Message):
 
 @dp.message(Command("search"))
 async def cmd_search(message: Message):
-    search_states[message.from_user.id] = True
+    set_flow_state(message.from_user.id, "search", {"active": True})
     await message.reply("Введите текст для поиска:")
 
 
-@dp.message(lambda m: m.from_user.id in search_states and not m.text.startswith("/"))
+@dp.message(lambda m: get_flow_state(m.from_user.id, "search") and not m.text.startswith("/"))
 async def process_search_input(message: Message):
     user_id = message.from_user.id
     query = message.text.strip()
-    search_states.pop(user_id, None)
+    clear_flow_state(user_id, "search")
 
     if not query:
         await message.reply("Пустой запрос. Попробуйте снова /search.")
