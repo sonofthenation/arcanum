@@ -4,7 +4,6 @@ import random
 import sqlite3
 from typing import Optional, Sequence
 
-DB_NAME = "movies.db"
 PAGE_SIZE = 10  # сколько фильмов показываем на странице по жанру
 
 
