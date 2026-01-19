@@ -496,7 +496,8 @@ def search_movies(query: str):
     Поиск фильмов по названию, режиссёру или жанру.
     Возвращает: (movie_id, title, genres_string, director, file_id)
     """
-    q = f"%{query}%"  # ищем как есть, без lower()
+    normalized_query = query.strip().lower()
+    q = f"%{normalized_query}%"
 
     conn = None
     try:
