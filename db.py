@@ -63,6 +63,18 @@ def init_db():
         """
     )
 
+    cur.execute(
+        "CREATE INDEX IF NOT EXISTS idx_movie_genres_genre_id ON movie_genres(genre_id);"
+    )
+    cur.execute(
+        "CREATE INDEX IF NOT EXISTS idx_movie_genres_movie_id ON movie_genres(movie_id);"
+    )
+    cur.execute(
+        "CREATE INDEX IF NOT EXISTS idx_watch_history_user_id ON watch_history(user_id);"
+    )
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_movies_title ON movies(title);")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_movies_director ON movies(director);")
+
     conn.commit()
     conn.close()
 
@@ -519,6 +531,5 @@ def get_movies_by_genre_admin(genre_id: int, offset: int, limit: int):
     rows = cur.fetchall()
     conn.close()
     return rows
-
 
 
