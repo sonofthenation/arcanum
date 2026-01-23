@@ -291,8 +291,8 @@ async def cmd_admin(message: Message):
         await message.reply("Вы не являетесь администратором этого бота.")
         return
 
-    first_time = user_id not in admin_verified
-    admin_verified.add(user_id)
+    first_time = not is_admin_verified(user_id)
+    set_admin_verified(user_id)
     logger.info("Admin verified user_id=%s first_time=%s", user_id, first_time)
 
     # Настраиваем меню команд ТОЛЬКО для этого чата (т.е. твоего диалога с ботом)
@@ -563,7 +563,7 @@ async def cb_edit_genres_done(callback: CallbackQuery):
             genre_ids=selected,
             user_id=user_id,
         )
-        edit_states.pop(user_id, None)
+        clear_flow_state(user_id, "edit")
         await callback.message.edit_text("Ошибка базы данных при сохранении изменений.")
         await callback.answer()
         return
@@ -589,7 +589,7 @@ async def cb_edit_genres_done(callback: CallbackQuery):
     if new_director:
         text_lines.append(f"Режиссёр: {new_director}")
 
-    edit_states.pop(user_id, None)
+    clear_flow_state(user_id, "edit")
     logger.info(
         "Admin %s edited movie id=%s title='%s' director='%s' genre_ids=%s",
         user_id,
@@ -624,7 +624,7 @@ async def cb_edit_genres_skip(callback: CallbackQuery):
             orig_genres=orig_genres,
             user_id=user_id,
         )
-        edit_states.pop(user_id, None)
+        clear_flow_state(user_id, "edit")
         await callback.message.edit_text("Ошибка базы данных при подготовке жанров.")
         await callback.answer()
         return
@@ -645,7 +645,7 @@ async def cb_edit_genres_skip(callback: CallbackQuery):
             genre_ids=genre_ids,
             user_id=user_id,
         )
-        edit_states.pop(user_id, None)
+        clear_flow_state(user_id, "edit")
         await callback.message.edit_text("Ошибка базы данных при сохранении изменений.")
         await callback.answer()
         return
@@ -667,7 +667,7 @@ async def cb_edit_genres_skip(callback: CallbackQuery):
     if new_director:
         text_lines.append(f"Режиссёр: {new_director}")
 
-    edit_states.pop(user_id, None)
+    clear_flow_state(user_id, "edit")
     logger.info(
         "Admin %s edited movie (genres unchanged) id=%s title='%s' director='%s' genre_ids=%s",
         user_id,
@@ -1577,7 +1577,7 @@ async def callback_add_genre_done(callback: CallbackQuery):
             user_id=user_id,
         )
         await callback.message.edit_text("Ошибка базы данных при сохранении фильма.")
-        add_states.pop(user_id, None)
+        clear_flow_state(user_id, "add")
         return
     logger.info(
         "Admin %s added movie id=%s title='%s' genre_ids=%s",
